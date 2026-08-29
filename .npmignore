@@ -1,0 +1,10 @@
+test/
+.github/
+.vscode/
+.idea/
+*.log
+.DS_Store
+.editorconfig
+.nvmrc
+coverage/
+*.tgz

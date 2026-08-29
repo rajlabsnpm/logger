@@ -1,0 +1,57 @@
+{
+  "name": "@rajlabs/logger",
+  "version": "1.0.0",
+  "description": "A beautiful, lightweight, dependency-free logger for Node.js with pretty and JSON output, namespaces, child loggers, and safe handling of errors and circular objects.",
+  "main": "src/index.js",
+  "exports": {
+    ".": {
+      "require": "./src/index.js",
+      "import": "./src/index.mjs",
+      "default": "./src/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
+  "keywords": [
+    "logger",
+    "logging",
+    "log",
+    "console",
+    "cli",
+    "terminal",
+    "pretty",
+    "json",
+    "structured-logging",
+    "namespace",
+    "child-logger"
+  ],
+  "author": "RajLabs",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rajlabsnpm/logger.git"
+  },
+  "bugs": {
+    "url": "https://github.com/rajlabsnpm/logger/issues"
+  },
+  "homepage": "https://github.com/rajlabsnpm/logger#readme",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "os": [
+    "darwin",
+    "linux",
+    "win32"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}
