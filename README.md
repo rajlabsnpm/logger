@@ -10,15 +10,19 @@ A developer-first Node.js logger: beautiful local output, structured production 
 22:41:03  FATAL    Application cannot continue
 ```
 
-## Why this package exists
+## Why @rajlabs/logger?
 
 Most Node.js projects end up choosing between `console.log` (no structure, no levels, no request correlation) and a heavyweight logging framework with a large dependency tree and a steep configuration surface. `@rajlabs/logger` aims for the middle ground: a small, zero-dependency library that looks great in your terminal during development, produces clean structured JSON in production, and grows with you — automatic request context, redaction, custom transports — without ever requiring a build step or a config file.
 
-- **Simple by default.** `createLogger()` and five familiar level methods just work.
-- **Beautiful in development, structured in production**, with `"auto"` config that picks the right mode without you thinking about it.
-- **Safe by default.** Built-in redaction, immutable logging (your objects are never mutated), and a logger that never crashes your app no matter what you throw at it.
-- **Extensible.** Custom transports, lifecycle hooks, and custom levels, all built around a simple structured log entry.
-- **Zero runtime dependencies**, CJS and ESM, Node.js built-ins only.
+- **Zero runtime dependencies**, works as both CommonJS and ESM, no build step.
+- **Readable, colorized output in development**, clean structured JSON in production — `"auto"` config picks the right mode for you.
+- **Request correlation out of the box.** Cryptographic request IDs and `AsyncLocalStorage`-based ambient context that survives `await`, timers, and nested async calls.
+- **Redaction built in**, covering bare keys, dotted paths, and a single-segment wildcard, applied recursively across metadata, context, and Errors.
+- **Safe Error serialization** — messages, stacks, `cause` chains, and custom own properties, with sensitive Error properties scrubbed by default.
+- **Timers, transports, and hooks** for measuring durations, shipping logs anywhere, and mutating or cancelling entries before they're written.
+- **Custom levels and deterministic sampling** for high-volume logs, plus opt-in source locations when you need them.
+- **Fast on the common path.** Level filtering happens before any redaction, cloning, or formatting, so disabled log calls stay cheap.
+- **Never crashes your app.** Caller data is never mutated, circular references are handled safely, and hook/transport failures are isolated from your process.
 
 ## Installation
 
@@ -45,6 +49,10 @@ ESM works too:
 
 ```js
 import { createLogger } from "@rajlabs/logger";
+
+const log = createLogger();
+
+log.info("Server started");
 ```
 
 ## Configuration
@@ -150,7 +158,7 @@ try {
 }
 ```
 
-**Custom properties** on an Error (`err.code`, `err.statusCode`, etc.) are preserved under `error.extra` in JSON mode and shown inline in pretty mode. Because these often come from HTTP client libraries and can carry credentials the developer never consciously logged, they're scrubbed against a built-in sensitive-name list *by default*, independent of your `redact` config — set `redactErrorProps: false` to disable this safety net.
+**Custom properties** on an Error (`err.code`, `err.statusCode`, etc.) are preserved under `error.extra` in JSON mode and shown beneath the error details in pretty mode. Because these often come from HTTP client libraries and can carry credentials the developer never consciously logged, they're scrubbed against a built-in sensitive-name list *by default*, independent of your `redact` config — set `redactErrorProps: false` to disable this safety net.
 
 ## Child loggers
 
@@ -363,13 +371,20 @@ Logger → Structured Entry → Redaction/Sampling → Transports (console / JSO
 A transport is any object with a `log(entry)` method:
 
 ```js
+const entries = [];
+
 const customTransport = {
   log(entry) {
-    // entry: { timestamp, level, message, name, context, metadata, error, source }
+    entries.push(entry);
   },
 };
 
 const log = createLogger({ transports: [customTransport] });
+
+log.info("User logged in", { userId: 42 });
+
+// entries[0] is the structured entry:
+// { timestamp, level: "info", message: "User logged in", name, context, metadata: { userId: 42 }, error, source }
 ```
 
 Transports can optionally implement `flush()`/`close()` for cleanup on shutdown — called via `logger.flush()` / `logger.close()`.
@@ -438,7 +453,7 @@ Validated at `createLogger()` time: level names can't collide with reserved logg
 const log = createLogger({ sampling: { debug: 0.1 } });
 ```
 
-Sampling here is **deterministic**, not randomized: a rate of `0.1` emits exactly the 1st out of every 10 eligible messages, not "roughly" 1 in 10. This makes the volume predictable and the behavior testable, at the cost of not being a true random sample — call out this trade-off if your use case genuinely needs randomized sampling.
+Sampling here is **deterministic**, not randomized: a rate of `0.1` emits exactly the 1st out of every 10 eligible messages, not "roughly" 1 in 10. This makes the volume predictable and the behavior testable, at the cost of not being a true random sample. If you need randomized sampling, implement that policy in a custom transport or upstream.
 
 - Only levels explicitly listed in `sampling` are affected; anything else (including `error`/`fatal` by default) is never sampled.
 - Sampling is checked immediately after the level filter, before any redaction, context merging, or formatting happens — sampled-out messages do essentially no work.
@@ -567,7 +582,7 @@ There are no breaking changes. Every v1.0.0 API and behavior — `createLogger()
 
 ## Node.js compatibility
 
-Requires Node.js `>= 18.0.0` (for stable `AsyncLocalStorage`). Ships as CommonJS with a thin ESM wrapper — no build step, no transpilation, no bundler required.
+Requires Node.js `>= 18.0.0`. Ships as CommonJS with a thin ESM wrapper — no build step, no transpilation, no bundler required.
 
 ## License
 
