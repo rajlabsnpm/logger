@@ -1,43 +1,21 @@
-name: CI
+name: Release Verification
 
 on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
+  release:
+    types: [published]
 
 permissions:
   contents: read
 
 jobs:
-  test:
-    name: Test on Node ${{ matrix.node-version }}
+  verify:
+    name: Verify release ${{ github.event.release.tag_name }}
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        node-version: [18.x, 20.x, 22.x]
-
     steps:
-      - name: Check out repository
+      - name: Check out release tag
         uses: actions/checkout@v4
-
-      - name: Set up Node.js ${{ matrix.node-version }}
-        uses: actions/setup-node@v4
         with:
-          node-version: ${{ matrix.node-version }}
-
-      - name: Install dependencies
-        run: npm install
-
-      - name: Run tests
-        run: npm test
-
-  package:
-    name: Validate published package contents
-    runs-on: ubuntu-latest
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
+          ref: ${{ github.event.release.tag_name }}
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -46,6 +24,22 @@ jobs:
 
       - name: Install dependencies
         run: npm install
+
+      - name: Verify package.json version matches release tag
+        run: |
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          TAG_VERSION="${GITHUB_TAG#v}"
+          echo "package.json version: $PKG_VERSION"
+          echo "release tag version:  $TAG_VERSION"
+          if [ "$PKG_VERSION" != "$TAG_VERSION" ]; then
+            echo "::error::package.json version ($PKG_VERSION) does not match release tag ($GITHUB_TAG)"
+            exit 1
+          fi
+        env:
+          GITHUB_TAG: ${{ github.event.release.tag_name }}
+
+      - name: Run tests
+        run: npm test
 
       - name: Pack and inspect the tarball
         run: |
