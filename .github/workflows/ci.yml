@@ -28,3 +28,37 @@ jobs:
 
       - name: Run tests
         run: npm test
+
+  package:
+    name: Validate published package contents
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Pack and inspect the tarball
+        run: |
+          npm pack --dry-run > pack-output.txt
+          cat pack-output.txt
+          if grep -qE '(^|/)(test|bench|examples|\.github)/' pack-output.txt; then
+            echo "::error::Development-only files would be published to npm"
+            exit 1
+          fi
+
+      - name: Install the packed tarball into a clean project and verify both entry points
+        run: |
+          npm pack
+          mkdir -p /tmp/pkg-check
+          cd /tmp/pkg-check
+          npm init -y > /dev/null
+          npm install "$GITHUB_WORKSPACE"/rajlabs-logger-*.tgz
+          node -e "const { createLogger } = require('@rajlabs/logger'); createLogger().info('cjs install check ok');"
+          node --input-type=module -e "import('@rajlabs/logger').then(({ createLogger }) => createLogger().info('esm install check ok'));"

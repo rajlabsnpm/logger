@@ -1,7 +1,7 @@
 {
   "name": "@rajlabs/logger",
-  "version": "1.0.0",
-  "description": "A beautiful, lightweight, dependency-free logger for Node.js with pretty and JSON output, namespaces, child loggers, and safe handling of errors and circular objects.",
+  "version": "1.5.0",
+  "description": "A developer-first Node.js logger with beautiful local output, structured JSON for production, automatic AsyncLocalStorage request context, safe redaction, and extensible transports — dependency-free at the core.",
   "main": "src/index.js",
   "exports": {
     ".": {
@@ -18,7 +18,8 @@
     "CHANGELOG.md"
   ],
   "scripts": {
-    "test": "node --test test/*.test.js"
+    "test": "node --test test/*.test.js",
+    "bench": "for f in bench/[!_]*.js; do node \"$f\"; done"
   },
   "keywords": [
     "logger",
@@ -31,7 +32,13 @@
     "json",
     "structured-logging",
     "namespace",
-    "child-logger"
+    "child-logger",
+    "redaction",
+    "request-context",
+    "async-local-storage",
+    "transports",
+    "express",
+    "middleware"
   ],
   "author": "RajLabs",
   "license": "MIT",
