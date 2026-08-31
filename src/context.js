@@ -3,10 +3,7 @@
 const { AsyncLocalStorage } = require('node:async_hooks');
 const crypto = require('node:crypto');
 
-// Deliberately restrictive: this is what we're willing to trust from an
-// upstream proxy. Anything outside this shape gets thrown away in favor of a
-// freshly generated ID rather than flowing an attacker-controlled string
-// straight into your logs.
+// We only trust a very boring request ID shape. If the proxy sends chaos, we toss it and generate a fresh one instead of shoving attacker garbage into the logs.
 const REQUEST_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 
 function generateRequestId() {
@@ -49,11 +46,8 @@ function shouldIgnoreRoute(req, ignore) {
 }
 
 /**
- * Context-only middleware: no automatic request/response logging, just
- * request-ID generation and AsyncLocalStorage propagation for the duration
- * of the request. Works for Express (req, res, next) and equally well as a
- * raw `http.createServer` request listener, since `next` is only called if
- * it was actually provided.
+ * This just carries a request ID around while the request is alive.
+ * No logging spam, no drama. Works with Express or a plain Node server.
  */
 function createRequestContextMiddleware(logger, options = {}) {
   const requestIdOptions = options.requestId || {};
@@ -72,8 +66,8 @@ function createRequestContextMiddleware(logger, options = {}) {
 }
 
 /**
- * Full request logging middleware: context propagation plus a single log
- * line when the response finishes, with method/path/status/duration.
+ * Request logging with a tiny "here's what happened" line at the end.
+ * Method, path, status, and how long the whole thing took.
  */
 function createRequestLoggingMiddleware(logger, options = {}) {
   const contextMiddleware = createRequestContextMiddleware(logger, options);

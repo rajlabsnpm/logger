@@ -1,6 +1,10 @@
 'use strict';
 
 const util = require('util');
+const os = require('node:os');
+
+const PROCESS_PID = process.pid;
+const PROCESS_HOSTNAME = os.hostname();
 
 const ANSI = {
   reset: '\x1b[0m',
@@ -13,18 +17,34 @@ const ANSI = {
   red: '\x1b[31m',
   magenta: '\x1b[35m',
   white: '\x1b[37m',
-  // fatal gets a background so it's unmissable when scrolling past a wall of logs.
   bgRed: '\x1b[1m\x1b[97m\x1b[41m',
 };
 
-// The outer log envelope owns these names, so a colliding metadata/context
-// key gets renamed instead of clobbering a core field in JSON mode.
-const RESERVED_JSON_KEYS = new Set(['timestamp', 'level', 'message', 'name', 'error']);
+const RESERVED_JSON_KEYS = new Set(['timestamp', 'level', 'message', 'name', 'error', 'pid', 'hostname']);
 
 function colorize(text, colorName) {
   const code = ANSI[colorName];
   if (!code) return text;
   return `${code}${text}${ANSI.reset}`;
+}
+
+const CONTROL_CHAR_PATTERN = /[\u0000-\u001f\u007f-\u009f]/g;
+const CONTROL_CHAR_ESCAPES = { '\n': '\\n', '\r': '\\r', '\t': '\\t' };
+
+function sanitizeControlChars(str) {
+  return str.replace(CONTROL_CHAR_PATTERN, (ch) => {
+    if (CONTROL_CHAR_ESCAPES[ch]) return CONTROL_CHAR_ESCAPES[ch];
+    return `\\x${ch.charCodeAt(0).toString(16).padStart(2, '0')}`;
+  });
+}
+
+const CONTROL_CHAR_PATTERN_KEEP_NEWLINE = /[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/g;
+
+function sanitizeStackControlChars(str) {
+  return str.replace(CONTROL_CHAR_PATTERN_KEEP_NEWLINE, (ch) => {
+    if (CONTROL_CHAR_ESCAPES[ch]) return CONTROL_CHAR_ESCAPES[ch];
+    return `\\x${ch.charCodeAt(0).toString(16).padStart(2, '0')}`;
+  });
 }
 
 function pad2(value) {
@@ -38,49 +58,43 @@ function formatClockTime(date) {
 function safeString(value) {
   if (value === undefined) return '';
   if (value === null) return 'null';
-  if (typeof value === 'string') return value;
+  if (typeof value === 'string') return sanitizeControlChars(value);
   if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') {
     return String(value);
   }
   if (value instanceof Error) {
-    return value.message || String(value);
+    return sanitizeControlChars(value.message || String(value));
   }
   try {
-    return util.inspect(value, { depth: 4, breakLength: Infinity, compact: true });
+    return sanitizeControlChars(util.inspect(value, { depth: 4, breakLength: Infinity, compact: true }));
   } catch (err) {
     return '[unserializable value]';
   }
 }
 
-// `duration` gets an "ms" suffix in pretty output (and stays a plain number
-// in JSON) — see the Timers section in the README for why this one key is
-// special-cased instead of a generic unit-formatting system.
 function formatMetaValue(key, value) {
   if (key === 'duration' && typeof value === 'number') return `${value}ms`;
   if (value === undefined) return 'undefined';
   if (value === null) return 'null';
   if (typeof value === 'string') {
-    return /\s/.test(value) ? JSON.stringify(value) : value;
+    const safe = sanitizeControlChars(value);
+    return /\s/.test(safe) ? JSON.stringify(safe) : safe;
   }
   if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') {
     return String(value);
   }
-  if (typeof value === 'symbol') return value.toString();
+  if (typeof value === 'symbol') return sanitizeControlChars(value.toString());
   if (typeof value === 'function') return value.name ? `[Function: ${value.name}]` : '[Function]';
   if (value instanceof Error) {
-    return value.message ? `${value.name || 'Error'}: ${value.message}` : String(value);
+    return sanitizeControlChars(value.message ? `${value.name || 'Error'}: ${value.message}` : String(value));
   }
   try {
-    return util.inspect(value, { depth: 4, breakLength: Infinity, compact: true });
+    return sanitizeControlChars(util.inspect(value, { depth: 4, breakLength: Infinity, compact: true }));
   } catch (err) {
     return '[unserializable value]';
   }
 }
 
-// A manual key-by-key copy rather than Object.assign: Object.assign invokes
-// getters as it copies, so a hostile getter on the source would throw before
-// we even get to rendering. This way a single bad field degrades to
-// "[unreadable]" instead of losing the whole log line.
 function safeMergeInto(target, source) {
   if (!source) return;
   for (const key of Object.keys(source)) {
@@ -92,9 +106,6 @@ function safeMergeInto(target, source) {
   }
 }
 
-// Context fields are ambient (request context, withContext); metadata is
-// whatever was passed at the call site. Metadata wins on key collisions
-// because it's the most specific, most deliberate thing the caller wrote.
 function flattenFields(entry) {
   if (!entry.context && !entry.metadata) return null;
   const merged = {};
@@ -120,8 +131,11 @@ function formatMetaPretty(fields) {
 }
 
 function formatErrorPretty(info, indent) {
-  const header = info.message ? `${info.name}: ${info.message}` : info.name;
-  const body = info.stack || header;
+
+  const safeName = sanitizeControlChars(info.name || 'Error');
+  const safeMessage = info.message ? sanitizeControlChars(info.message) : '';
+  const header = safeMessage ? `${safeName}: ${safeMessage}` : safeName;
+  const body = info.stack ? sanitizeStackControlChars(info.stack) : header;
   const lines = [body.split('\n').map((l) => indent + l).join('\n')];
 
   if (info.extra && Object.keys(info.extra).length > 0) {
@@ -205,6 +219,8 @@ function formatJson(entry) {
   const obj = {};
   if (timestamp) obj.timestamp = timestamp.toISOString();
   obj.level = level;
+  obj.pid = PROCESS_PID;
+  obj.hostname = PROCESS_HOSTNAME;
   if (name) obj.name = name;
   obj.message = message === undefined ? '' : message;
 
@@ -231,4 +247,6 @@ module.exports = {
   formatMetaValue,
   flattenFields,
   RESERVED_JSON_KEYS,
+  sanitizeControlChars,
+  sanitizeStackControlChars,
 };

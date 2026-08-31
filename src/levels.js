@@ -9,9 +9,7 @@ const DEFAULT_LEVELS = {
   fatal: { value: 50, label: 'FATAL', color: 'bgRed' },
 };
 
-// Anything the Logger prototype already needs for its own methods. A custom
-// level called "child" would silently shadow logger.child() and nobody would
-// notice until something broke in a confusing way, so we just refuse it.
+// We do not let a level named "child" stomp on logger.child(). That is how you get a weird bug and a bad mood.
 const RESERVED_METHOD_NAMES = new Set([
   'child',
   'time',
@@ -58,9 +56,8 @@ function normalizeLevelDef(name, def) {
 }
 
 /**
- * Merges user-supplied level definitions on top of the built-ins. Custom
- * levels are additive by default (defining `trace` doesn't remove `debug`),
- * but a name that collides with a built-in level overrides it entirely.
+ * Merge custom levels into the defaults. New levels are extra, not a replacement,
+ * unless the name matches a built-in one, in which case the built-in gets replaced.
  */
 function resolveLevels(customLevels) {
   if (customLevels === undefined || customLevels === null) {

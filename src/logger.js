@@ -22,7 +22,7 @@ function warnOnce(key, message) {
   try {
     process.stderr.write(`[@rajlabs/logger] ${message}\n`);
   } catch (err) {
-    // if we can't even write to stderr there's nothing left to do
+    // stderr is already dead. no point yelling into the void.
   }
 }
 
@@ -60,11 +60,9 @@ function validateHooks(hooks) {
 }
 
 /**
- * Everything shared across a logger and every child/withContext/etc. derived
- * from it lives here: resolved levels, transports, redaction, sampling,
- * hooks, the AsyncLocalStorage instance, and the `once()`/`time()` registries.
- * The Logger instances themselves only hold the bits that legitimately vary
- * per-view: name, level, timestamp toggle, and persistent context.
+ * Shared logger stuff lives here: levels, transports, redaction, sampling,
+ * hooks, request context, and the weird timer/once registries.
+ * The logger instance itself only keeps the bits that actually change per logger.
  */
 function buildCore(opts) {
   const levelsTable = resolveLevels(opts.levels);
@@ -134,9 +132,19 @@ class Logger {
     this._attachLevelMethods();
   }
 
+  /**
+   * This is the fast path for the logger methods. We already know the level came
+   * from our own list, so we skip the slow validity check when the message is being
+   * filtered out. The real safety check still lives in `_log()` for the weird cases.
+   */
   _attachLevelMethods() {
-    for (const levelName of this._core.levelOrder) {
-      this[levelName] = (message, meta) => this._log(levelName, message, meta);
+    const core = this._core;
+    for (const levelName of core.levelOrder) {
+      const levelDef = core.levels[levelName];
+      this[levelName] = (message, meta) => {
+        if (levelDef.value < core.levels[this.level].value) return;
+        return this._log(levelName, message, meta);
+      };
     }
   }
 
@@ -159,9 +167,8 @@ class Logger {
   }
 
   /**
-   * Precedence, lowest to highest specificity: AsyncLocalStorage request
-   * context < withContext() persistent context < explicit call-site metadata.
-   * A key set in more than one place uses the most specific value.
+   * Context priority is: request-scoped < withContext() < actual call metadata.
+   * If the same key shows up in more than one place, the most specific one wins.
    */
   withContext(fields) {
     if (!fields || typeof fields !== 'object') {
@@ -196,12 +203,23 @@ class Logger {
     return createRequestLoggingMiddleware(this, options);
   }
 
+  /**
+   * The timer registry is keyed by label, which is a little cursed.
+   * If two timers share the same label, the newer one wins, so we only delete
+   * the timer if it is still the exact same instance. Otherwise we would nuke
+   * someone else's stopwatch and cause a tiny apocalypse.
+   */
   time(label, level = 'info') {
     if (typeof this[level] !== 'function') {
       throw new TypeError(`logger.time(label, level) — "${level}" is not a known level`);
     }
-    const timer = createTimer(this, label, level);
-    this._core.timers.set(label, timer);
+    const core = this._core;
+    const timer = createTimer(this, label, level, () => {
+      if (core.timers.get(label) === timer) {
+        core.timers.delete(label);
+      }
+    });
+    core.timers.set(label, timer);
     return timer;
   }
 
@@ -212,12 +230,6 @@ class Logger {
     timer.end(message, meta);
   }
 
-  /**
-   * `once()` state lives on the shared core, so it's deduped across the
-   * whole tree of loggers derived from the same createLogger() call (a
-   * logger and all its .child()/.withContext() descendants) — not reset per
-   * child, and not shared between independent createLogger() calls.
-   */
   once(key, message, meta) {
     if (typeof key !== 'string' || key.length === 0) {
       throw new TypeError('logger.once(key, message, meta?) requires a non-empty string key');

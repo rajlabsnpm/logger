@@ -2,9 +2,10 @@
 
 const DEFAULT_REPLACEMENT = '[REDACTED]';
 
-// A reasonable "turn this on and stop worrying about it" default list.
-// Deliberately conservative — we'd rather miss an exotic field name than
-// redact something a developer actually wanted to see in their logs.
+const MAX_REDACT_DEPTH = 20;
+const DEPTH_LIMIT_MARKER = '[Redaction depth limit exceeded]';
+
+
 const DEFAULT_REDACT_KEYS = [
   'password',
   'passwd',
@@ -46,11 +47,10 @@ function normalizeRedactOption(option) {
 }
 
 /**
- * Rules come in two flavors:
- *   - a bare key name ("password") matches that key at ANY depth
- *   - a dotted path ("user.password", "*.password") matches only that exact
- *     shape, with "*" acting as a single-segment wildcard
- * There's no deep/glob wildcard support on purpose — see README for why.
+ * Redact rules come in two flavors:
+ *   - plain key names like "password" match anywhere
+ *   - dotted paths like "user.password" or "*.password" match a specific shape
+ * We keep it simple on purpose; deep glob weirdness is a rabbit hole.
  */
 class Redactor {
   constructor(option, replacementOverride) {
@@ -77,7 +77,7 @@ class Redactor {
 
   redact(value) {
     if (!this.enabled || value === null || typeof value !== 'object') return value;
-    return this._redactValue(value, [], new Map());
+    return this._redactValue(value, [], new Map(), 0);
   }
 
   _matchesPath(pathSegments) {
@@ -101,24 +101,26 @@ class Redactor {
     return false;
   }
 
-  _redactValue(value, pathSegments, seen) {
+  _redactValue(value, pathSegments, seen, depth) {
     if (value === null || typeof value !== 'object') return value;
 
-    // Errors get their own dedicated serialization/redaction pass in errors.js.
+    // Errors get their own special handling down in errors.js. We don't poke at them like regular objects.
     if (value instanceof Error) return value;
+
+    if (depth > MAX_REDACT_DEPTH) return DEPTH_LIMIT_MARKER;
 
     if (Array.isArray(value)) {
       if (seen.has(value)) return '[Circular]';
       seen.set(value, true);
-      return value.map((item, index) => this._redactValue(item, pathSegments.concat(String(index)), seen));
+      return value.map((item, index) =>
+        this._redactValue(item, pathSegments.concat(String(index)), seen, depth + 1)
+      );
     }
 
     const isPlainObject = value.constructor === Object || value.constructor === undefined;
     if (!isPlainObject) {
-      // Dates, Maps, Buffers, class instances, etc. We treat these as opaque
-      // leaves rather than reflecting into them — poking at arbitrary
-      // prototypes to find "password"-shaped fields is a good way to trip a
-      // hostile getter or leak something we don't understand.
+      // Dates, Maps, Buffers, custom class stuff: treat them as opaque blobs.
+      // We do not start digging through random prototypes like a raccoon in a dumpster.
       return value;
     }
 
@@ -140,10 +142,10 @@ class Redactor {
         output[key] = '[unreadable]';
         continue;
       }
-      output[key] = this._redactValue(child, nextPath, seen);
+      output[key] = this._redactValue(child, nextPath, seen, depth + 1);
     }
     return output;
   }
 }
 
-module.exports = { Redactor, DEFAULT_REDACT_KEYS, DEFAULT_REPLACEMENT };
+module.exports = { Redactor, DEFAULT_REDACT_KEYS, DEFAULT_REPLACEMENT, MAX_REDACT_DEPTH, DEPTH_LIMIT_MARKER };

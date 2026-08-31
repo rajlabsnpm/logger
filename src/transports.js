@@ -15,14 +15,9 @@ function resolveColors(colorsOption, stream) {
 }
 
 /**
- * The default transport. Also exported so custom transport arrays can
- * include it alongside other transports, e.g.
- * `transports: [consoleTransport(), myTransport]`.
- *
- * `levels`/`labelWidth` default to the built-in level table so this works
- * standalone; createLogger() passes its own resolved table through when it
- * builds the default transport internally, so custom levels still render
- * correctly there.
+ * The default console transport. It's exported so you can toss it into a custom
+ * transport list if you want to be fancy. It also knows how to render custom levels
+ * when the logger hands it the resolved table.
  */
 function consoleTransport(options = {}) {
   const format = options.format === 'json' ? 'json' : 'pretty';

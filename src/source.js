@@ -11,11 +11,9 @@ function parseFrame(line) {
 }
 
 /**
- * Stack inspection is intentionally opt-in (see the `source` option) because
- * building and parsing a stack trace on every log call is real overhead.
- * We walk frames until we find one that isn't inside this package, so this
- * keeps working no matter how many internal wrapper functions sit between
- * the public log method and this call.
+ * We only do this when the source option is on, because stack parsing is expensive.
+ * We walk up until we leave this package so the log points to the real caller,
+ * not the logger internals doing the waving.
  */
 function captureSource() {
   const originalLimit = Error.stackTraceLimit;

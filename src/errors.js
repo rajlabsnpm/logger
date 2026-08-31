@@ -5,11 +5,7 @@ const { Redactor, DEFAULT_REDACT_KEYS } = require('./redact');
 const CORE_ERROR_KEYS = new Set(['name', 'message', 'stack', 'cause']);
 const MAX_CAUSE_DEPTH = 10;
 
-// Applied to an Error's own custom properties regardless of whether the user
-// configured `redact` themselves. HTTP client libraries love to attach things
-// like `error.config.headers.authorization` that the developer never
-// consciously chose to log — this is a safety net, not a replacement for
-// `redact`. Set `redactErrorProps: false` on createLogger() to opt out.
+// This is the "please don't leak auth junk from weird error objects" safety net. Some libraries glue secrets onto Error instances like glitter on a toddler. Turn off redactErrorProps if you really want that chaos.
 const DEFAULT_EXTRA_REDACTOR = new Redactor(DEFAULT_REDACT_KEYS);
 
 function safeStringifyPrimitive(value) {
