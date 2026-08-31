@@ -20,11 +20,8 @@ function validateSamplingOption(sampling) {
 }
 
 /**
- * Sampling here is deterministic (every Nth message), not randomized. A rate
- * of 0.1 emits exactly 1 in 10 eligible messages rather than "roughly" 1 in
- * 10 — which makes the behavior testable and gives you a predictable log
- * volume instead of a random one. Levels not listed in `sampling` are never
- * sampled, so errors/fatals are unaffected unless you explicitly opt them in.
+ * This is every-Nth, not random sprinkle mode. A rate of 0.1 means exactly 1 in 10
+ * eligible logs, which is way easier to reason about and less chaotic.
  */
 class Sampler {
   constructor(rates) {

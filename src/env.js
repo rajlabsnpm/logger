@@ -9,9 +9,9 @@ function isCI() {
 }
 
 /**
- * `level: "auto"` — conservative and boring on purpose:
- *   - production or CI: "info" (debug noise doesn't belong in prod logs)
- *   - everything else: "debug" (matches the existing default)
+ * Auto level, but like a responsible adult:
+ *   - prod or CI: "info"
+ *   - everywhere else: "debug"
  */
 function resolveAutoLevel() {
   if (isProduction() || isCI()) return 'info';
@@ -19,11 +19,11 @@ function resolveAutoLevel() {
 }
 
 /**
- * `format: "auto"`:
- *   - production: "json" (structured logs for aggregation)
- *   - CI: "json" (CI log viewers are usually plain text, not real TTYs)
- *   - a real TTY: "pretty"
- *   - anything else (piped to a file, non-interactive shell): "json"
+ * Auto format:
+ *   - prod: json
+ *   - CI: json
+ *   - real TTY: pretty
+ *   - otherwise: json, because nobody wants a rainbow in a log file
  */
 function resolveAutoFormat(stream) {
   if (isProduction()) return 'json';

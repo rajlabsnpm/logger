@@ -222,6 +222,7 @@ INFO     Database query completed  duration=143ms
 - `duration` is rendered with an `ms` suffix in pretty mode; in JSON mode it stays a plain number (`"duration": 143`).
 - If you prefer a `console.time()`-style pairing, `log.time(label)` / `log.timeEnd(label, message?, meta?)` work the same way, keyed by label. `timeEnd()` on a label that was never started is a silent no-op.
 - Timers work through child loggers and carry their name/context.
+- Every timer removes its own bookkeeping entry as soon as it's ended (via either `.end()` or `timeEnd()`), so ending timers never accumulates memory — see the v1.5.1 entry in the [CHANGELOG](./CHANGELOG.md) if you're upgrading from an earlier version. A timer that's started and genuinely never ended is kept around so a later `timeEnd(label)` can still find it; this is bounded by how many distinct, unfinished labels your application creates, not by log volume.
 
 ## Redaction
 
@@ -261,6 +262,7 @@ Redaction:
 - Never mutates your original object — a fresh copy is built internally.
 - Treats `Error`s, `Date`s, `Map`s, and other class instances as opaque leaves rather than reflecting into their internals — this avoids tripping hostile getters or breaking encapsulation. (Errors get their own redaction pass — see [Errors](#errors).)
 - Also applies to persistent (`withContext`) and ambient (`runWithContext`) context fields, not just explicit metadata.
+- Stops descending past 20 levels of nesting (objects and arrays combined), replacing anything deeper with `"[Redaction depth limit exceeded]"` instead of continuing to recurse. This is well beyond any nesting depth a real application would deliberately construct, and exists purely as a safety net against pathological or maliciously crafted input.
 
 ## JSON mode
 
@@ -276,6 +278,8 @@ log.info("Request completed", { method: "GET", path: "/users", status: 200, dura
 {
   "timestamp": "2026-08-30T22:41:03.000Z",
   "level": "info",
+  "pid": 48213,
+  "hostname": "web-1",
   "message": "Request completed",
   "method": "GET",
   "path": "/users",
@@ -284,7 +288,9 @@ log.info("Request completed", { method: "GET", path: "/users", status: 200, dura
 }
 ```
 
-Context and metadata fields are flattened onto the top-level object (metadata wins on key collisions with context, per the precedence rule above). If a field would collide with a reserved envelope key (`timestamp`, `level`, `message`, `name`, `error`), it's automatically namespaced as `meta_<key>` so it can never silently overwrite a core field.
+`pid` (`process.pid`) and `hostname` (`os.hostname()`) are included on every JSON line, resolved once at process start — this is JSON-mode only and doesn't appear in pretty output.
+
+Context and metadata fields are flattened onto the top-level object (metadata wins on key collisions with context, per the precedence rule above). If a field would collide with a reserved envelope key (`timestamp`, `level`, `pid`, `hostname`, `message`, `name`, `error`), it's automatically namespaced as `meta_<key>` so it can never silently overwrite a core field.
 
 ## Request logging
 
@@ -475,7 +481,7 @@ This is **opt-in only** — capturing and parsing a stack trace on every call is
 
 The normal path is designed to stay fast, especially for disabled levels:
 
-- A filtered-out level call (`log.debug(...)` when `level: "info"`) does no formatting, no redaction, no cloning, and no stack inspection — just a single numeric comparison.
+- A filtered-out level call (`log.debug(...)` when `level: "info"`) does no formatting, no redaction, no cloning, and no stack inspection — just a single numeric comparison against the current level threshold. (Before v1.5.1, this path also re-validated the level name on every call; that check was redundant — the level name reaching it was always already known-valid — and has been removed. See the [CHANGELOG](./CHANGELOG.md).)
 - Sampling is checked right after the level filter, before any other work.
 - Redaction is skipped entirely (no allocation, no cloning) when `redact` isn't configured.
 - Source-location capture only happens when `source: true` is set.
@@ -487,9 +493,11 @@ See [`bench/`](./bench) for the benchmark suite and how to run it.
 
 - The logger **never sends logs over the network** on its own — that only happens if you configure a transport that does.
 - Logging never mutates caller-provided objects, whether or not redaction is configured.
+- Pretty-mode output sanitizes control characters (newlines, carriage returns, tabs, ANSI/terminal escape sequences) out of the `message`, metadata values, and error name/message — a value like `"line one\nFAKE"` renders as the visible text `line one\nFAKE`, not as a forged second log line. Normal printable Unicode is untouched. JSON mode was never affected by this, since `JSON.stringify` already escapes control characters.
 - Redaction never reflects into class instances, `Date`s, `Map`s, etc. — only plain objects and arrays are walked, which avoids triggering hostile/unexpected getters.
 - A getter that throws degrades that single field to `"[unreadable]"` instead of crashing the log call or losing the rest of the line.
 - Circular references are handled safely in both pretty (native `util.inspect` behavior) and JSON (`"[Circular]"`) modes.
+- Redaction stops descending past 20 levels of nesting rather than recursing arbitrarily deep, so a pathological or maliciously deep object can't crash the process — see [Redaction](#redaction).
 - Custom Error properties are scrubbed against a built-in sensitive-name list by default, independent of your `redact` config (`redactErrorProps: false` to disable).
 - Incoming `X-Request-ID` header values are validated against a strict allowlist pattern before being trusted; anything else is discarded in favor of a freshly generated ID.
 - Request bodies are never read or logged by `log.middleware()`.
