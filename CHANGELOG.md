@@ -48,6 +48,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - JSON output now includes `pid` and `hostname` on every line, resolved once at process start. `pid`/`hostname` were added to the reserved envelope-key list, so metadata using either name is namespaced to `meta_pid`/`meta_hostname` instead of being overwritten or overwriting the process fields. Pretty-mode output is unchanged.
 - Disabled-level calls (e.g. `log.debug(...)` when `level: "info"`) are significantly faster. The previous implementation re-validated the level name on every single call, including calls that are filtered out and do nothing else — a redundant check, since the level name reaching it was always already known-valid by construction. That check has been removed from this path; `bench/basic.js`, run repeatedly on this machine, showed roughly a 5-6x improvement on the disabled-level benchmark, with no measurable change to any enabled-level benchmark. No other performance work was done in this release — see the Performance section of the README for what's intentionally left as future work.
 
+## [1.5.1] - 2026-09-01
+
+### Fixed
+
+- **Timer registry memory leak.** `logger.time(label)` followed by `timer.end()` — the primary documented usage pattern — left the timer's entry in an internal registry forever, growing unboundedly with sustained use (confirmed: 50,000 properly-ended timers left 50,000 entries behind). Every timer now removes its own entry on completion, identified by reference rather than by label, so a timer can never accidentally delete a different, still-running timer that reused the same label in the meantime. `logger.timeEnd(label)`, repeated `.end()` calls, async timers, and child-logger timer sharing all continue to work exactly as before.
+- **Pretty-mode log injection.** An untrusted `message`, metadata value, or error name/message could previously inject raw newlines, carriage returns, or ANSI/terminal escape sequences into pretty-mode output, forging what looked like an additional, independent log line or manipulating the terminal. These are now rendered as visible, inert text (e.g. a literal newline becomes the two characters `\n`) instead of raw control bytes; normal printable Unicode is unaffected. JSON mode was not affected by this (`JSON.stringify` already escapes control characters) and is unchanged.
+- **Redaction stack-overflow DoS.** A sufficiently deeply nested object or array passed through an enabled `redact` config could crash the process with a stack overflow. Redaction now stops descending past 20 levels of nesting, returning a `"[Redaction depth limit exceeded]"` marker for anything deeper instead of continuing to recurse. Circular-reference detection, normal-depth redaction behavior, and the "never mutate the caller's object" guarantee are unchanged.
+
+### Changed
+
+- JSON output now includes `pid` and `hostname` on every line, resolved once at process start. `pid`/`hostname` were added to the reserved envelope-key list, so metadata using either name is namespaced to `meta_pid`/`meta_hostname` instead of being overwritten or overwriting the process fields. Pretty-mode output is unchanged.
+- Disabled-level calls (e.g. `log.debug(...)` when `level: "info"`) are significantly faster. The previous implementation re-validated the level name on every single call, including calls that are filtered out and do nothing else — a redundant check, since the level name reaching it was always already known-valid by construction. That check has been removed from this path; `bench/basic.js`, run repeatedly on this machine, showed roughly a 5-6x improvement on the disabled-level benchmark, with no measurable change to any enabled-level benchmark. No other performance work was done in this release — see the Performance section of the README for what's intentionally left as future work.
+
 ## [1.5.0] - 2026-08-31
 
 ### Added
@@ -120,5 +133,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Full test suite (26 tests) using Node's built-in test runner (`node:test`).
 
 [1.6.0]: https://github.com/rajlabsnpm/logger/releases/tag/v1.6.0
+[1.5.1]: https://github.com/rajlabsnpm/logger/releases/tag/v1.5.1
 [1.5.0]: https://github.com/rajlabsnpm/logger/releases/tag/v1.5.0
 [1.0.0]: https://github.com/rajlabsnpm/logger/releases/tag/v1.0.0
