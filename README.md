@@ -67,9 +67,12 @@ log.info("Server started");
 | `timestamp`         | `boolean`                                                   | `true`         | Whether to include a timestamp on each line.                                                          |
 | `colors`            | `boolean \| "auto"`                                          | *(auto)*       | Force colors on/off, or resolve automatically from TTY status and env vars.                          |
 | `format`            | `"pretty" \| "json" \| "auto"`                                | `"pretty"`     | Output format. See [JSON mode](#json-mode) and [Environment-aware config](#environment-aware-config). |
-| `redact`            | `boolean \| string[] \| { paths, replacement }`               | *(off)*        | Redact sensitive fields. See [Redaction](#redaction).                                                 |
-| `redactErrorProps`  | `boolean`                                                   | `true`         | Scrub known-sensitive names from a logged Error's custom properties. See [Security](#security).       |
+| `redact`            | `boolean \| string[] \| { paths?, replacement?, errorProps? }` | *(off)*        | Redact sensitive fields. See [Redaction](#redaction).                                                 |
+| `redactErrorProps`  | `boolean`                                                   | `true`         | **Deprecated** — use `redact: { errorProps }` instead. See [Redaction](#redaction).                   |
 | `sampling`          | `{ [level]: rate }`                                         | *(off)*        | Deterministic per-level sampling. See [Sampling](#sampling).                                          |
+| `collapse`          | `boolean \| { windowMs?, maxTracked? }`                       | *(off)*        | Collapse repeated identical log lines. See [Duplicate log collapsing](#duplicate-log-collapsing).     |
+| `version`           | `string \| false`                                           | *(auto)*       | Version attached to JSON output. See [Version & deployment metadata](#version--deployment-metadata).  |
+| `deployment`        | `string`                                                    | *(none)*       | Deployment identifier attached to JSON output. See [Version & deployment metadata](#version--deployment-metadata). |
 | `source`            | `boolean`                                                   | `false`        | Attach a `[file:line]` source location to each entry. See [Source location](#source-location).        |
 | `transports`        | `Array<{ log }>`                                            | console output | Custom output destinations. See [Transports](#transports).                                            |
 | `hooks`             | `{ before?, after? }`                                       | *(none)*       | Lifecycle hooks. See [Hooks](#hooks).                                                                  |
@@ -158,7 +161,7 @@ try {
 }
 ```
 
-**Custom properties** on an Error (`err.code`, `err.statusCode`, etc.) are preserved under `error.extra` in JSON mode and shown beneath the error details in pretty mode. Because these often come from HTTP client libraries and can carry credentials the developer never consciously logged, they're scrubbed against a built-in sensitive-name list *by default*, independent of your `redact` config — set `redactErrorProps: false` to disable this safety net.
+**Custom properties** on an Error (`err.code`, `err.statusCode`, etc.) are preserved under `error.extra` in JSON mode and shown beneath the error details in pretty mode. Because these often come from HTTP client libraries and can carry credentials the developer never consciously logged, they're scrubbed against a built-in sensitive-name list *by default*, independent of your `redact` config — see [Error property redaction](#error-property-redaction) for how to configure or disable this.
 
 ## Child loggers
 
@@ -223,6 +226,7 @@ INFO     Database query completed  duration=143ms
 - If you prefer a `console.time()`-style pairing, `log.time(label)` / `log.timeEnd(label, message?, meta?)` work the same way, keyed by label. `timeEnd()` on a label that was never started is a silent no-op.
 - Timers work through child loggers and carry their name/context.
 - Every timer removes its own bookkeeping entry as soon as it's ended (via either `.end()` or `timeEnd()`), so ending timers never accumulates memory — see the v1.5.1 entry in the [CHANGELOG](./CHANGELOG.md) if you're upgrading from an earlier version. A timer that's started and genuinely never ended is kept around so a later `timeEnd(label)` can still find it; this is bounded by how many distinct, unfinished labels your application creates, not by log volume.
+- As a guard against that last case growing unbounded (typically from building labels out of something unique per call, like a request ID, and never ending them), a one-time warning is printed to `stderr` once the registry passes 10,000 simultaneously open entries. It's a warning only — no timer is ever deleted or altered by this check, since silently cleaning up would just replace a memory leak with a silently-wrong duration measurement the next time someone calls `timeEnd()` on a "cleaned up" label.
 
 ## Redaction
 
@@ -264,6 +268,31 @@ Redaction:
 - Also applies to persistent (`withContext`) and ambient (`runWithContext`) context fields, not just explicit metadata.
 - Stops descending past 20 levels of nesting (objects and arrays combined), replacing anything deeper with `"[Redaction depth limit exceeded]"` instead of continuing to recurse. This is well beyond any nesting depth a real application would deliberately construct, and exists purely as a safety net against pathological or maliciously crafted input.
 
+### Error property redaction
+
+Custom properties on a logged `Error` (`err.config.headers.authorization`, etc.) are scrubbed against `DEFAULT_REDACT_KEYS` **by default**, independent of whether `redact` is configured at all — see [Errors](#errors) for why. Configure this with `errorProps` inside the same `redact` object used for everything else:
+
+```js
+const log = createLogger({
+  redact: { errorProps: false }, // turn off the built-in error-prop safety net
+});
+
+const log2 = createLogger({
+  redact: { paths: ["password"], errorProps: false }, // your own rules still apply to error extras
+});
+```
+
+`redact: { errorProps: false }` on its own (no `paths`) is a normal, zero-overhead way to say "don't touch error extras, and don't touch anything else either" — omitting `paths` doesn't implicitly turn on any context/metadata redaction.
+
+Whatever you put in `redact.paths` (or `redact: true`/`redact: [...]`) always applies to error extras too, regardless of `errorProps` — `errorProps` only controls the *built-in* default-key safety net, not your own rules.
+
+> **Migrating from `redactErrorProps`:** the top-level `redactErrorProps` option is deprecated as of v1.6 in favor of `redact: { errorProps }` — same behavior, one config surface instead of two overlapping ones. It still works during the 1.x line (with a one-time deprecation warning on `stderr`); if both are supplied, `redact.errorProps` wins.
+>
+> ```diff
+> - createLogger({ redactErrorProps: false })
+> + createLogger({ redact: { errorProps: false } })
+> ```
+
 ## JSON mode
 
 For production log aggregation, switch to structured JSON output — one JSON object per line:
@@ -290,7 +319,32 @@ log.info("Request completed", { method: "GET", path: "/users", status: 200, dura
 
 `pid` (`process.pid`) and `hostname` (`os.hostname()`) are included on every JSON line, resolved once at process start — this is JSON-mode only and doesn't appear in pretty output.
 
-Context and metadata fields are flattened onto the top-level object (metadata wins on key collisions with context, per the precedence rule above). If a field would collide with a reserved envelope key (`timestamp`, `level`, `pid`, `hostname`, `message`, `name`, `error`), it's automatically namespaced as `meta_<key>` so it can never silently overwrite a core field.
+Context and metadata fields are flattened onto the top-level object (metadata wins on key collisions with context, per the precedence rule above). If a field would collide with a reserved envelope key (`timestamp`, `level`, `pid`, `hostname`, `version`, `deployment`, `message`, `name`, `error`), it's automatically namespaced as `meta_<key>` so it can never silently overwrite a core field.
+
+## Version & deployment metadata
+
+```js
+const log = createLogger(); // version auto-detected from your package.json
+```
+
+```json
+{ "level": "info", "pid": 48213, "hostname": "web-1", "version": "2.3.1", "message": "Server started" }
+```
+
+`version` is auto-detected once, at `createLogger()` time, from the *consuming application's* `package.json` (`process.cwd()` — this doesn't walk up the directory tree looking for one, so run your app from its package root as usual). Override or disable it explicitly:
+
+```js
+createLogger({ version: "2.3.1" }); // explicit override, skips auto-detection
+createLogger({ version: false }); // no version field at all
+```
+
+There's no equivalent auto-detection for `deployment` (a git SHA, a release tag, whatever your pipeline uses) — different hosting platforms expose this under different, incompatible env var names, so it's explicit-only:
+
+```js
+createLogger({ deployment: process.env.GIT_SHA });
+```
+
+Both are JSON-mode only, following the same convention as `pid`/`hostname` — pretty-mode output doesn't show either, to keep local dev output uncluttered.
 
 ## Request logging
 
@@ -464,6 +518,49 @@ Sampling here is **deterministic**, not randomized: a rate of `0.1` emits exactl
 - Only levels explicitly listed in `sampling` are affected; anything else (including `error`/`fatal` by default) is never sampled.
 - Sampling is checked immediately after the level filter, before any redaction, context merging, or formatting happens — sampled-out messages do essentially no work.
 
+## Duplicate log collapsing
+
+An opt-in guard against a retry loop or a flapping dependency flooding your output with the same line over and over:
+
+```js
+const log = createLogger({ collapse: true }); // windowMs: 5000, maxTracked: 1000
+
+for (let i = 0; i < 100; i++) {
+  log.warn("Retry failed");
+}
+```
+
+```text
+22:41:05  WARN     Retry failed
+22:41:10  WARN     Retry failed  (+99 more in 5.0s)
+```
+
+The first occurrence of a message is always logged immediately, in full — nothing is ever delayed or hidden on the first call. If more calls come in that count as "the same" before the window closes, they're counted instead of logged; once `windowMs` elapses with no further matches (or you call `log.flush()`/`log.close()`), one summary line is emitted with the count and the metadata/error from the *most recent* suppressed call. The next matching call after that starts a fresh cycle.
+
+Two calls count as duplicates when they share the same **level**, **logger name**, **message text**, and — if an error is attached — the same **error name + message**. Metadata and context are deliberately *not* part of that comparison: they usually carry the one thing that's actually varying across an otherwise-repeated call (an attempt number, a request ID), and folding them into the comparison would mean near-identical floods almost never actually collapse. The trade-off is that the *specific* metadata on each suppressed call is not individually preserved — only the most recent one survives, alongside the count.
+
+```json
+{"level":"warn","message":"Retry failed","attempt":1}
+{"level":"warn","message":"Retry failed","attempt":100,"collapsed":{"count":99,"windowMs":5000}}
+```
+
+The `message` field is never altered by collapsing (no `" x99"` appended to it), so grouping or alerting on exact message text in a log aggregator still works on both the full entry and the summary.
+
+Configure the window and the memory bound explicitly:
+
+```js
+const log = createLogger({
+  collapse: { windowMs: 10_000, maxTracked: 500 },
+});
+```
+
+- **`windowMs`** (default `5000`): how long a run of duplicates is tracked before a summary is emitted.
+- **`maxTracked`** (default `1000`): the maximum number of *distinct* messages tracked at once. Once full, a genuinely new distinct message is simply logged normally (uncollapsed) rather than evicting an in-progress window or being dropped — nothing your application logs is ever silently discarded by this feature.
+- A message that never actually repeats produces no summary line, ever, and costs one internal entry plus one timer for at most `windowMs`.
+- Timers used for this are unref'd — an idle logger with pending collapse windows will never keep your process alive.
+- **Hooks and transports only see the first occurrence and the periodic summary**, not every individual suppressed call — the same trade-off `sampling` already makes for sampled-out messages.
+- Disabled by default; the disabled path costs a single boolean check per call.
+
 ## Source location
 
 ```js
@@ -486,26 +583,32 @@ The normal path is designed to stay fast, especially for disabled levels:
 - Redaction is skipped entirely (no allocation, no cloning) when `redact` isn't configured.
 - Source-location capture only happens when `source: true` is set.
 - Metadata/context objects are only copied when there's actually something to merge (context + metadata); a plain `log.info("msg", data)` with no context passes `data` straight through by reference until formatting.
+- `collapse` and the timer-registry leak guard are both off the hot path when not in use: collapsing costs a single boolean check per call when disabled (the default), and the timer guard is one integer comparison per `log.time()` call, regardless of registry size.
+- When `collapse` *is* enabled, a genuine flood of duplicate messages is substantially faster than logging every line (suppressed calls skip redaction, hooks, and transports entirely) — but enabling it for messages that never actually repeat adds real, measurable overhead (mostly the cost of arming a timer) for no benefit. See `bench/collapse.js` for both cases measured side by side; don't take either number on faith.
 
 See [`bench/`](./bench) for the benchmark suite and how to run it.
 
 ## Security
 
+"Safe structured logging by default" is the design goal here, not a marketing claim — this section is a precise, testable list of exactly what that covers, with links to the tests backing each item, not an assertion that this is "the most secure" anything.
+
 - The logger **never sends logs over the network** on its own — that only happens if you configure a transport that does.
 - Logging never mutates caller-provided objects, whether or not redaction is configured.
-- Pretty-mode output sanitizes control characters (newlines, carriage returns, tabs, ANSI/terminal escape sequences) out of the `message`, metadata values, and error name/message — a value like `"line one\nFAKE"` renders as the visible text `line one\nFAKE`, not as a forged second log line. Normal printable Unicode is untouched. JSON mode was never affected by this, since `JSON.stringify` already escapes control characters.
-- Redaction never reflects into class instances, `Date`s, `Map`s, etc. — only plain objects and arrays are walked, which avoids triggering hostile/unexpected getters.
-- A getter that throws degrades that single field to `"[unreadable]"` instead of crashing the log call or losing the rest of the line.
+- Pretty-mode output sanitizes control characters (newlines, carriage returns, tabs, ANSI/terminal escape sequences) out of the `message`, metadata/context **key names and values**, and error name/message — a value *or key* like `"line one\nFAKE"` renders as the visible text `line one\nFAKE`, not as a forged second log line. Normal printable Unicode is untouched. JSON mode was never affected by this, since `JSON.stringify` already escapes control characters in both keys and values. (Key-name sanitization is new in v1.6 — see the [CHANGELOG](./CHANGELOG.md) if you're upgrading from v1.5.1, which sanitized values but not keys.)
+- Redaction never reflects into class instances, `Date`s, `Map`s, etc. — only plain objects and arrays are walked, which avoids triggering hostile/unexpected getters. This includes the internal check used to *tell* a plain object from a class instance in the first place: if reading a value's `constructor` throws, it's treated as an opaque leaf rather than crashing redaction.
+- A getter that throws — on a metadata field, an Error's custom property, or one of an Error's own `name` / `message` / `stack` / `cause` properties — degrades just that one field to a safe fallback instead of crashing the log call or losing the rest of the line.
 - Circular references are handled safely in both pretty (native `util.inspect` behavior) and JSON (`"[Circular]"`) modes.
 - Redaction stops descending past 20 levels of nesting rather than recursing arbitrarily deep, so a pathological or maliciously deep object can't crash the process — see [Redaction](#redaction).
-- Custom Error properties are scrubbed against a built-in sensitive-name list by default, independent of your `redact` config (`redactErrorProps: false` to disable).
+- Custom Error properties are scrubbed against a built-in sensitive-name list by default, independent of your `redact` config — see [Error property redaction](#error-property-redaction) for how to configure or disable this.
 - Incoming `X-Request-ID` header values are validated against a strict allowlist pattern before being trusted; anything else is discarded in favor of a freshly generated ID.
 - Request bodies are never read or logged by `log.middleware()`.
+
+What this **isn't**: an audit of what you choose to log, encryption for output, or a substitute for a real secrets-management story. `redact` is a safety net for field names you tell it about (plus a conservative built-in list for Error extras) — it can't redact a secret that ends up in the `message` string itself, or a field name it's never heard of.
 
 ## Configuration validation
 
 - **`level` and `format`** (plain strings) never throw on an invalid value — they fall back to the default, since these often come from environment variables that shouldn't be able to crash your app. This matches v1.0's original contract.
-- **Structural configuration you write in code** — `levels`, `redact`, `sampling`, `transports`, `hooks` — throws synchronously at `createLogger()` time on a malformed shape. These are programming errors you want to catch immediately in development, not something that should silently misbehave in production.
+- **Structural configuration you write in code** — `levels`, `redact`, `sampling`, `collapse`, `transports`, `hooks` — throws synchronously at `createLogger()` time on a malformed shape. These are programming errors you want to catch immediately in development, not something that should silently misbehave in production. (Exception, deliberately: `redact`'s object form no longer requires a `paths` key — see [Redaction](#redaction) — since `{ errorProps: false }` on its own is a legitimate, complete configuration.)
 
 ## API reference
 
@@ -553,7 +656,7 @@ log.once("deprecated-api", "This API is deprecated");
 
 ### `log.flush()` / `log.close()`
 
-Calls `flush()`/`close()` on every transport that implements it.
+Calls `flush()`/`close()` on every transport that implements it. Also immediately emits any pending [duplicate-collapse](#duplicate-log-collapsing) summaries rather than waiting for their window to elapse, so a suppressed run of duplicates is never lost on shutdown.
 
 ### `consoleTransport(options?)`
 
@@ -569,7 +672,7 @@ The built-in list of sensitive key names used by `redact: true`.
 
 ### `VERSION`
 
-The package version string.
+This package's own version string (e.g. `"1.6.0"`) — not related to the per-logger `version` option, which is your *application's* version attached to log output. See [Version & deployment metadata](#version--deployment-metadata).
 
 ## Examples
 
@@ -586,7 +689,7 @@ See [`examples/`](./examples) for complete, runnable examples:
 
 ## Migration from v1.0.0
 
-There are no breaking changes. Every v1.0.0 API and behavior — `createLogger()`, `debug/info/success/warn/error`, `level`, `timestamp`, `colors`, `format`, `name`, `child()`, metadata handling, error handling, `NO_COLOR`/`FORCE_COLOR`, CJS/ESM — continues to work exactly as documented. `fatal` is a new, additive level; everything else described above is opt-in via new configuration options.
+There are no breaking changes. Every v1.0.0 API and behavior — `createLogger()`, `debug/info/success/warn/error`, `level`, `timestamp`, `colors`, `format`, `name`, `child()`, metadata handling, error handling, `NO_COLOR`/`FORCE_COLOR`, CJS/ESM — continues to work exactly as documented. `fatal` is a new, additive level; everything else described above is opt-in via new configuration options. This still holds as of v1.6.0 — the only deprecation to date is `redactErrorProps` (still works, see [Error property redaction](#error-property-redaction)), and every new v1.6 feature (`collapse`, `version`, `deployment`) is opt-in and off by default.
 
 ## Node.js compatibility
 

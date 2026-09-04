@@ -5,7 +5,37 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.5.1] - 2026-09-01
+## [1.6.0] - 2026-09-04
+
+### Added
+
+- **Version/deployment metadata.** Every JSON log line now carries a `version` field, auto-detected from the *consuming application's* `package.json` (`process.cwd()`, not walked up the directory tree — this library's own version is still the separate `VERSION` export). Override it with `createLogger({ version: "2.3.1" })`, or turn it off entirely with `version: false`. A `deployment` field (e.g. a git SHA or release tag) is available via `createLogger({ deployment: "blue-7f3a2c1" })` — this one is opt-in only, with no attempt at auto-detecting any specific hosting platform. Both are JSON-only, following the same convention as `pid`/`hostname`; pretty-mode output is unchanged. Both are added to the reserved-key list, so a metadata field literally named `version` or `deployment` is namespaced to `meta_version`/`meta_deployment`.
+- **Duplicate-log-line collapsing**, opt-in via `createLogger({ collapse: true })` or `createLogger({ collapse: { windowMs: 5000, maxTracked: 1000 } })` (shown values are the defaults). Two calls are considered duplicates when they share the same level, logger name, message text, and (if present) error name+message — metadata/context is deliberately *not* part of that comparison, since it usually carries the one varying detail (an attempt count, a request id) of an otherwise-repeated call. The first occurrence of a new duplicate key is always logged in full and immediately; while more matching calls keep arriving, they're counted rather than logged; once `windowMs` passes with no further matches (or `logger.flush()`/`logger.close()` is called), a single summary entry is emitted carrying the count and the metadata/error from the *most recent* suppressed call, under a new `collapsed: { count, windowMs }` field (JSON) or a `(+N more in Xs)` suffix (pretty). The original `message` text is never altered, so JSON log aggregation/grouping by exact message still works on both the full entry and the summary. A message that never actually repeats produces no summary line and costs one `Map` entry plus one (`unref`'d) timer for at most `windowMs`. Simultaneous distinct tracked keys are capped by `maxTracked`; once full, additional distinct keys are simply logged uncollapsed rather than evicting an in-progress window or dropping anything. Hooks and transports only see the first occurrence and the periodic summary, not every suppressed call — the same trade-off `sampling` already makes. Disabled by default; the disabled path costs one boolean check.
+- **`redact: { errorProps }`**, unifying error-prop redaction into the same config surface as `redact`. See Deprecated below.
+- A one-time warning when the internal timer registry (`log.time(label)`) grows past 10,000 simultaneously-open entries, the usual sign of labels built from something unique per call (e.g. a request ID) whose timers are never `.end()`ed. The guard only warns — it never deletes a timer, since that would trade a memory leak for a silently-wrong duration measurement.
+- `bench/errors.js` and `bench/collapse.js`, benchmarking error serialization and the new collapsing feature (including its overhead when nothing actually collapses).
+
+### Deprecated
+
+- `createLogger({ redactErrorProps })` (top-level) is deprecated in favor of `createLogger({ redact: { errorProps } })` — same behavior, one config surface instead of two overlapping ones. The old option still works during the 1.x line and emits a one-time deprecation warning; if both are supplied, the new `redact.errorProps` wins. See the Redaction section of the README for the full migration note.
+
+### Changed
+
+- `redact`'s object form no longer requires a `paths` key (`createLogger({ redact: { errorProps: false } })` is now valid on its own); omitted `paths` defaults to `[]`. `redact: {}` is now a harmless no-op instead of throwing.
+- A `redact` config with zero effective rules (e.g. `{ errorProps: false }` with no `paths`) no longer walks context/metadata on every log call — previously, any non-empty `redact` option enabled a full traversal even when nothing could ever match.
+
+### Security
+
+- **Hostile getters on the `Error` object's own `name`, `message`, `stack`, or `cause` properties no longer crash the entire log call.** Previously, only custom/extra properties on a logged error were guarded this way (via v1.5.0's existing `[unreadable]` fallback); the error's own core fields had no such guard and a throwing getter on any of them propagated out of `_log()` uncaught. Each now degrades independently to a safe default (matching the existing `error.name || 'Error'` fallback semantics) instead of taking down the call.
+- **A hostile `constructor` getter on a nested value during redaction no longer crashes; it's now treated as an opaque leaf**, consistent with how `Date`/`Map`/other class instances were already handled.
+- **Metadata, context, and `Error` extra-property *key names* are now sanitized against control characters and ANSI escapes in pretty mode**, closing a gap in the v1.5.1 log-injection fix, which only sanitized *values*. A key like `"ok\nFAKE fatal: system compromised"` could previously still forge what looked like an additional, independent log line even though a value containing the same payload could not. JSON mode was never affected (`JSON.stringify` already escapes control characters in both keys and values) and is unchanged.
+
+### Performance
+
+- `bench/collapse.js`: with collapsing enabled and a genuine flood of identical messages, throughput is roughly 5-8x the disabled baseline on this machine, since suppressed calls skip redaction, hook execution, and the transport entirely. With collapsing enabled but no message ever actually repeating (the worst case — pure tracking overhead, no payoff), throughput drops to roughly half the baseline; this is opt-in and only worth enabling where at least some repetition is expected. See `bench/collapse.js` for exact numbers on your machine — measurements are not claims.
+- `bench/errors.js`: the new hostile-getter guards in error serialization add no measurable overhead for well-behaved errors (the overwhelmingly common case) — they only add a `try`/`catch` around property reads that were already being performed.
+
+
 
 ### Fixed
 
@@ -89,5 +119,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Zero runtime dependencies. Works via both CommonJS (`require`) and ESM (`import`) with no build step.
 - Full test suite (26 tests) using Node's built-in test runner (`node:test`).
 
+[1.6.0]: https://github.com/rajlabsnpm/logger/releases/tag/v1.6.0
 [1.5.0]: https://github.com/rajlabsnpm/logger/releases/tag/v1.5.0
 [1.0.0]: https://github.com/rajlabsnpm/logger/releases/tag/v1.0.0

@@ -20,7 +20,18 @@ const ANSI = {
   bgRed: '\x1b[1m\x1b[97m\x1b[41m',
 };
 
-const RESERVED_JSON_KEYS = new Set(['timestamp', 'level', 'message', 'name', 'error', 'pid', 'hostname']);
+const RESERVED_JSON_KEYS = new Set([
+  'timestamp',
+  'level',
+  'message',
+  'name',
+  'error',
+  'pid',
+  'hostname',
+  'version',
+  'deployment',
+  'collapsed',
+]);
 
 function colorize(text, colorName) {
   const code = ANSI[colorName];
@@ -119,13 +130,15 @@ function formatMetaPretty(fields) {
   if (keys.length === 0) return '';
   return keys
     .map((key) => {
+      // Keys can be naughty too.
+      const safeKey = sanitizeControlChars(key);
       let value;
       try {
         value = fields[key];
       } catch (err) {
-        return `${key}=[unreadable]`;
+        return `${safeKey}=[unreadable]`;
       }
-      return `${key}=${formatMetaValue(key, value)}`;
+      return `${safeKey}=${formatMetaValue(key, value)}`;
     })
     .join(' ');
 }
@@ -149,7 +162,7 @@ function formatErrorPretty(info, indent) {
 }
 
 function formatPretty(entry, useColors, levels, labelWidth) {
-  const { level, message, name, timestamp, error, source } = entry;
+  const { level, message, name, timestamp, error, source, collapsed } = entry;
   const parts = [];
 
   if (timestamp) {
@@ -179,6 +192,12 @@ function formatPretty(entry, useColors, levels, labelWidth) {
   if (source) {
     const sourceTag = `[${source}]`;
     messageSegment += '  ' + (useColors ? colorize(sourceTag, 'dim') : sourceTag);
+  }
+
+  if (collapsed) {
+    const seconds = (collapsed.windowMs / 1000).toFixed(1);
+    const collapsedTag = `(+${collapsed.count} more in ${seconds}s)`;
+    messageSegment += '  ' + (useColors ? colorize(collapsedTag, 'dim') : collapsedTag);
   }
 
   parts.push(messageSegment);
@@ -214,13 +233,15 @@ function safeStringify(obj) {
 }
 
 function formatJson(entry) {
-  const { level, message, name, timestamp, error, source } = entry;
+  const { level, message, name, timestamp, error, source, version, deployment, collapsed } = entry;
 
   const obj = {};
   if (timestamp) obj.timestamp = timestamp.toISOString();
   obj.level = level;
   obj.pid = PROCESS_PID;
   obj.hostname = PROCESS_HOSTNAME;
+  if (version) obj.version = version;
+  if (deployment) obj.deployment = deployment;
   if (name) obj.name = name;
   obj.message = message === undefined ? '' : message;
 
@@ -234,6 +255,7 @@ function formatJson(entry) {
 
   if (source) obj.source = source;
   if (error) obj.error = error;
+  if (collapsed) obj.collapsed = collapsed;
 
   return safeStringify(obj);
 }

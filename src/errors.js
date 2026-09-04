@@ -18,6 +18,16 @@ function safeStringifyPrimitive(value) {
   }
 }
 
+// Error fields can be getters. They can also be rude.
+function safeGet(obj, prop, fallback) {
+  try {
+    const value = obj[prop];
+    return value === undefined ? fallback : value;
+  } catch (err) {
+    return fallback;
+  }
+}
+
 function redactExtras(extra, userRedactor, redactErrorProps) {
   let result = extra;
   if (redactErrorProps !== false) {
@@ -39,11 +49,12 @@ function serializeError(error, options = {}, depth = 0) {
   }
 
   const info = {
-    name: error.name || 'Error',
-    message: error.message || '',
+    name: safeGet(error, 'name', 'Error') || 'Error',
+    message: safeGet(error, 'message', '') || '',
   };
 
-  if (typeof error.stack === 'string') info.stack = error.stack;
+  const stack = safeGet(error, 'stack', undefined);
+  if (typeof stack === 'string') info.stack = stack;
 
   const extraKeys = Object.keys(error).filter((key) => !CORE_ERROR_KEYS.has(key));
   if (extraKeys.length > 0) {
@@ -58,8 +69,9 @@ function serializeError(error, options = {}, depth = 0) {
     info.extra = redactExtras(extra, options.redactor, options.redactErrorProps);
   }
 
-  if (error.cause !== undefined) {
-    info.cause = serializeError(error.cause, options, depth + 1);
+  const cause = safeGet(error, 'cause', undefined);
+  if (cause !== undefined) {
+    info.cause = serializeError(cause, options, depth + 1);
   }
 
   return info;

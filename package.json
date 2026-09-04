@@ -1,6 +1,6 @@
 {
   "name": "@rajlabs/logger",
-  "version": "1.5.1",
+  "version": "1.6.0",
   "description": "A developer-first Node.js logger with beautiful local output, structured JSON for production, automatic AsyncLocalStorage request context, safe redaction, and extensible transports — dependency-free at the core.",
   "main": "src/index.js",
   "exports": {
@@ -19,7 +19,7 @@
   ],
   "scripts": {
     "test": "node --test test/*.test.js",
-    "bench": "for f in bench/[!_]*.js; do node \"$f\"; done"
+    "bench": "node scripts/run-benchmarks.js"
   },
   "keywords": [
     "logger",

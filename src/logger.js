@@ -8,6 +8,8 @@ const { captureSource } = require('./source');
 const { createTimer } = require('./timer');
 const { consoleTransport, validateTransports } = require('./transports');
 const { resolveAutoLevel, resolveAutoFormat } = require('./env');
+const { resolveVersion, resolveDeployment } = require('./metadata');
+const { Collapser } = require('./collapse');
 const {
   AsyncLocalStorage,
   createRequestContextMiddleware,
@@ -15,6 +17,9 @@ const {
 } = require('./context');
 
 const warnedOnce = new Set();
+
+// Too many timers? Someone forgot to stop the stopwatch.
+const TIMER_REGISTRY_WARN_THRESHOLD = 10000;
 
 function warnOnce(key, message) {
   if (warnedOnce.has(key)) return;
@@ -45,6 +50,25 @@ function resolveFormatOption(formatOption) {
   return formatOption === 'json' ? 'json' : 'pretty';
 }
 
+// The new redaction option wins; the old one gets a polite warning.
+function resolveRedactErrorProps(opts, redactor) {
+  const hasOld = Object.prototype.hasOwnProperty.call(opts, 'redactErrorProps');
+  const newValue = redactor.errorPropsOption;
+
+  if (hasOld) {
+    warnOnce(
+      'redactErrorProps',
+      'createLogger({ redactErrorProps }) is deprecated and will be removed in a future major ' +
+        'version. Use createLogger({ redact: { errorProps: false } }) instead — same behavior, ' +
+        'one config surface. See CHANGELOG.md for the full migration note.'
+    );
+  }
+
+  if (newValue !== undefined) return newValue;
+  if (hasOld) return opts.redactErrorProps !== false;
+  return true;
+}
+
 function validateHooks(hooks) {
   if (!hooks) return {};
   if (typeof hooks !== 'object') {
@@ -69,6 +93,7 @@ function buildCore(opts) {
   const redactor = new Redactor(opts.redact);
   const sampler = new Sampler(validateSamplingOption(opts.sampling));
   const hooks = validateHooks(opts.hooks);
+  const collapser = new Collapser(opts.collapse);
 
   const stdout = opts.stdout || process.stdout;
   const stderr = opts.stderr || process.stderr;
@@ -95,12 +120,15 @@ function buildCore(opts) {
     redactor,
     sampler,
     hooks,
+    collapser,
     transports,
     als: new AsyncLocalStorage(),
     onceKeys: new Set(),
     timers: new Map(),
     source: Boolean(opts.source),
-    redactErrorProps: opts.redactErrorProps !== false,
+    redactErrorProps: resolveRedactErrorProps(opts, redactor),
+    version: resolveVersion(opts.version),
+    deployment: resolveDeployment(opts.deployment),
     stdout,
     stderr,
     format,
@@ -220,6 +248,18 @@ class Logger {
       }
     });
     core.timers.set(label, timer);
+
+    // Warn, but do not meddle with somebody else's stopwatch.
+    if (core.timers.size >= TIMER_REGISTRY_WARN_THRESHOLD) {
+      warnOnce(
+        'timer-registry-size',
+        `the timer registry has grown to ${core.timers.size} entries. This usually means ` +
+          'labels aren\'t being reused (e.g. built from a per-request ID) and their timers ' +
+          'are never ended. Make sure every logger.time(label) has a matching timer.end() or ' +
+          'logger.timeEnd(label), or use a small, static set of labels.'
+      );
+    }
+
     return timer;
   }
 
@@ -248,12 +288,15 @@ class Logger {
   }
 
   flush() {
+    this._core.collapser.flushAll();
     for (const transport of this._core.transports) {
       if (typeof transport.flush === 'function') transport.flush();
     }
   }
 
   close() {
+    // Empty the duplicate bucket before closing the shop.
+    this._core.collapser.close();
     for (const transport of this._core.transports) {
       if (typeof transport.close === 'function') transport.close();
     }
@@ -268,6 +311,20 @@ class Logger {
     const rawContext = alsStore || this._context ? Object.assign({}, alsStore, this._context) : null;
     const { meta: rawMetadata, error } = normalizeMeta(meta);
 
+    if (core.collapser.enabled) {
+      const suppressed = core.collapser.record(
+        { level, name: this.name, message, context: rawContext, meta: rawMetadata, error },
+        (dLevel, dMessage, dContext, dMeta, dError, collapsed) =>
+          this._dispatchEntry(dLevel, dMessage, dContext, dMeta, dError, collapsed)
+      );
+      if (suppressed) return;
+    }
+
+    this._dispatchEntry(level, message, rawContext, rawMetadata, error, null);
+  }
+
+  _dispatchEntry(level, message, rawContext, rawMetadata, error, collapsed) {
+    const core = this._core;
     const redactor = core.redactor;
     const context = rawContext && redactor.enabled ? redactor.redact(rawContext) : rawContext;
     const metadata = rawMetadata && redactor.enabled ? redactor.redact(rawMetadata) : rawMetadata;
@@ -287,6 +344,9 @@ class Logger {
       metadata,
       error: errorInfo,
       source,
+      version: core.version,
+      deployment: core.deployment,
+      collapsed: collapsed || undefined,
     };
 
     if (core.hooks.before) {
