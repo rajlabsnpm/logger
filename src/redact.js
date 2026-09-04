@@ -24,25 +24,28 @@ function normalizeRedactOption(option) {
   if (!option) return null;
 
   if (option === true) {
-    return { paths: DEFAULT_REDACT_KEYS, replacement: DEFAULT_REPLACEMENT };
+    return { paths: DEFAULT_REDACT_KEYS, replacement: DEFAULT_REPLACEMENT, errorProps: undefined };
   }
 
   if (Array.isArray(option)) {
-    return { paths: option, replacement: DEFAULT_REPLACEMENT };
+    return { paths: option, replacement: DEFAULT_REPLACEMENT, errorProps: undefined };
   }
 
   if (typeof option === 'object') {
-    if (!Array.isArray(option.paths)) {
+    const paths = option.paths === undefined ? [] : option.paths;
+    if (!Array.isArray(paths)) {
       throw new TypeError('createLogger({ redact }) object form requires a "paths" array');
     }
     return {
-      paths: option.paths,
+      paths,
       replacement: typeof option.replacement === 'string' ? option.replacement : DEFAULT_REPLACEMENT,
+      // Undefined means "not specified". The caller needs that distinction.
+      errorProps: option.errorProps === undefined ? undefined : Boolean(option.errorProps),
     };
   }
 
   throw new TypeError(
-    'createLogger({ redact }) must be `true`, an array of keys/paths, or { paths, replacement }'
+    'createLogger({ redact }) must be `true`, an array of keys/paths, or { paths, replacement, errorProps }'
   );
 }
 
@@ -55,8 +58,14 @@ function normalizeRedactOption(option) {
 class Redactor {
   constructor(option, replacementOverride) {
     const normalized = normalizeRedactOption(option);
-    this.enabled = Boolean(normalized);
-    if (!this.enabled) return;
+
+    // Pass this along; logger.js handles the old option.
+    this.errorPropsOption = normalized ? normalized.errorProps : undefined;
+
+    if (!normalized) {
+      this.enabled = false;
+      return;
+    }
 
     this.replacement =
       typeof replacementOverride === 'string' ? replacementOverride : normalized.replacement;
@@ -73,6 +82,9 @@ class Redactor {
         this.keyNames.add(rule.toLowerCase());
       }
     }
+
+    // No paths? No tree walk. Easy win.
+    this.enabled = this.keyNames.size > 0 || this.pathPatterns.length > 0;
   }
 
   redact(value) {
@@ -117,7 +129,13 @@ class Redactor {
       );
     }
 
-    const isPlainObject = value.constructor === Object || value.constructor === undefined;
+    let isPlainObject;
+    try {
+      isPlainObject = value.constructor === Object || value.constructor === undefined;
+    } catch (err) {
+      // Weird constructor? Treat it like an opaque blob.
+      isPlainObject = false;
+    }
     if (!isPlainObject) {
       // Dates, Maps, Buffers, custom class stuff: treat them as opaque blobs.
       // We do not start digging through random prototypes like a raccoon in a dumpster.
